@@ -369,12 +369,27 @@ router.post("/chat/completions", async (req: Request, res: Response) => {
       });
     }
   } catch (err) {
-    logger.error({ err }, "Proxy error in /chat/completions");
-    if (!res.headersSent) {
-      res.status(500).json({ error: { message: "Internal server error", type: "server_error" } });
-    }
+    forwardError(err, res, "/chat/completions");
   }
 });
+
+function forwardError(err: unknown, res: Response, context: string): void {
+  logger.error({ err }, `Proxy error in ${context}`);
+  if (res.headersSent) return;
+
+  if (err instanceof Anthropic.APIError) {
+    const status = err.status ?? 500;
+    const body = (err as { error?: unknown }).error ?? { type: "error", error: { type: "api_error", message: err.message } };
+    res.status(status).json(body);
+    return;
+  }
+  if (err instanceof OpenAI.APIError) {
+    const status = err.status ?? 500;
+    res.status(status).json({ error: { message: err.message, type: err.type ?? "server_error" } });
+    return;
+  }
+  res.status(500).json({ error: { message: "Internal server error", type: "server_error" } });
+}
 
 router.post("/messages", async (req: Request, res: Response) => {
   if (!verifyBearer(req, res)) return;
@@ -386,6 +401,11 @@ router.post("/messages", async (req: Request, res: Response) => {
     res.status(400).json({ error: { message: "model is required", type: "invalid_request_error" } });
     return;
   }
+
+  const normalizedBody = {
+    ...body,
+    max_tokens: body.max_tokens ?? 8192,
+  };
 
   try {
     if (isAnthropicModel(model)) {
@@ -403,7 +423,7 @@ router.post("/messages", async (req: Request, res: Response) => {
         req.on("close", () => clearInterval(keepalive));
 
         try {
-          const streamReq = anthropic.messages.stream(body as Anthropic.MessageStreamParams);
+          const streamReq = anthropic.messages.stream(normalizedBody as Anthropic.MessageStreamParams);
 
           for await (const event of streamReq) {
             res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
@@ -415,11 +435,11 @@ router.post("/messages", async (req: Request, res: Response) => {
           clearInterval(keepalive);
         }
       } else {
-        const msg = await anthropic.messages.create(body as Anthropic.MessageCreateParamsNonStreaming);
+        const msg = await anthropic.messages.create(normalizedBody as Anthropic.MessageCreateParamsNonStreaming);
         res.json(msg);
       }
     } else if (isOpenAIModel(model)) {
-      const openAIBody = body as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParams;
+      const openAIBody = normalizedBody as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParams;
       if (stream) {
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
@@ -462,10 +482,7 @@ router.post("/messages", async (req: Request, res: Response) => {
       });
     }
   } catch (err) {
-    logger.error({ err }, "Proxy error in /messages");
-    if (!res.headersSent) {
-      res.status(500).json({ error: { message: "Internal server error", type: "server_error" } });
-    }
+    forwardError(err, res, "/messages");
   }
 });
 
