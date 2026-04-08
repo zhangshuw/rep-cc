@@ -406,11 +406,10 @@ router.post("/messages", async (req: Request, res: Response) => {
           const streamReq = anthropic.messages.stream(body as Anthropic.MessageStreamParams);
 
           for await (const event of streamReq) {
-            res.write(`data: ${JSON.stringify(event)}\n\n`);
+            res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
             (res as unknown as { flush?: () => void }).flush?.();
           }
 
-          res.write("data: [DONE]\n\n");
           res.end();
         } finally {
           clearInterval(keepalive);
